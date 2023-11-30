@@ -1,23 +1,22 @@
 import logging
 import gspread
+import asyncio
 from google.oauth2.service_account import Credentials
 from aiogram import executor
-import aiogram.utils.markdown as md
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.dispatcher import FSMContext
-from aiogram.dispatcher.filters import Text
-from aiogram.types import ParseMode
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.utils import executor
 from aiogram.dispatcher.filters.state import State, StatesGroup
-from aiogram.types import ReplyKeyboardRemove,ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 import buttons
+import os
 
 API_TOKEN = '5751694717:AAEkmL0Os01qZgbqCJ_K8i7USDMXUgfQe5g'
 
-# logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
 
 scope = ['https://www.googleapis.com/auth/spreadsheets']
 credentials = Credentials.from_service_account_file('project-403812-4e74a92ff835.json')
@@ -47,6 +46,7 @@ class States(StatesGroup):
 ### START ###
 @dp.message_handler(commands=['start'])
 async def on_start(message: types.Message):
+    worksheet = sheet.get_worksheet(0)
     await bot.send_video(message.chat.id, open('video.mp4', 'rb'),
                          reply_markup=types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("Начать", callback_data="start_data_collection")))
 
@@ -106,9 +106,11 @@ async def command(message: types.Message, state: FSMContext):
         await state.finish()
 
 ### SEARCH ###
-
-@dp.message_handler(text="Найти")
+@dp.message_handler(text="Найти🔍")
 async def command(message: types.Message):
+    worksheet = sheet.get_worksheet(0)
+    id = message.from_user.id
+    
     inline_btn1 = InlineKeyboardButton('<< Назад', callback_data='btn1')
     inline_btn2 = InlineKeyboardButton('Вперёд >>', callback_data='btn2')
 
@@ -116,13 +118,21 @@ async def command(message: types.Message):
     inline_kb.add(inline_btn1, inline_btn2)
     fio = worksheet.acell(f'A{buttons.user}').value
     tel = worksheet.acell(f'B{buttons.user}').value
-    message = f"Результат поиска🔍:\n\nФИО: {fio}\nТелефон: +{tel}"
-    chat_id = 1028676957  # Замените на ID чата или пользователя, куда отправить
+    message = (f"Результат поиска🔍:\n\nФИО: {fio}\nТелефон: +{tel}")
+    
+    
 
-    await bot.send_message(chat_id, message, reply_markup=inline_kb)
+    await bot.send_message(int(id), message, reply_markup=inline_kb)
+    asyncio.sleep(0.5)
+    lat = worksheet.acell(f'C{buttons.user}').value
+    lon = worksheet.acell(f'D{buttons.user}').value
+    location_message = await bot.send_location(id,float(lat),float(lon))
+    buttons.location_message_id = location_message.message_id
 @dp.callback_query_handler(lambda callback_query: callback_query.data == "btn2")
 async def command(callback_query: types.CallbackQuery, state: FSMContext):
-    
+    worksheet = sheet.get_worksheet(0)
+    chat_id = callback_query.from_user.id
+
     buttons.user = buttons.user + 1
     inline_btn1 = InlineKeyboardButton('<< Назад', callback_data='btn1')
     inline_btn2 = InlineKeyboardButton('Вперёд >>', callback_data='btn2')
@@ -131,22 +141,35 @@ async def command(callback_query: types.CallbackQuery, state: FSMContext):
     inline_kb.add(inline_btn1, inline_btn2)
     fio = worksheet.acell(f'A{buttons.user}').value
     tel = worksheet.acell(f'B{buttons.user}').value
-
+    
     if fio != None and tel != None:
+        if buttons.location_message_id:
+            await bot.delete_message(chat_id, buttons.location_message_id)
         message = f"Результат поиска🔍:\n\nФИО: {fio}\nТелефон: +{tel}"
-        chat_id = 1028676957  # Замените на ID чата или пользователя, куда отправить
-        await bot.send_message(chat_id, message, reply_markup=inline_kb)
+        await callback_query.message.edit_text(message, reply_markup=inline_kb)
+        lat = worksheet.acell(f'C{buttons.user}').value
+        lon = worksheet.acell(f'D{buttons.user}').value
+
+        location_message = await bot.send_location(chat_id,float(lat),float(lon))
+        buttons.location_message_id = location_message.message_id
+        #await bot.send_message(chat_id, message, reply_markup=inline_kb)
     if fio == None or tel == None:
         inline_btn1 = InlineKeyboardButton('<< Назад', callback_data='btn1')
         inline_kb = InlineKeyboardMarkup(row_width=1)
         inline_kb.add(inline_btn1)
 
         message = f"Результат поиска🔍:\n\nФИО: {fio}\nТелефон: +{tel}"
-        chat_id = 1028676957  # Замените на ID чата или пользователя, куда отправить
-        await bot.send_message(chat_id, 'Это был последний пользователь в списке', reply_markup=inline_kb)
+        await callback_query.message.edit_text('Это был последний пользователь в списке', reply_markup=inline_kb)
+        #await bot.send_message(chat_id, 'Это был последний пользователь в списке', reply_markup=inline_kb)
 @dp.callback_query_handler(lambda callback_query: callback_query.data == "btn1")
 async def command(callback_query: types.CallbackQuery, state: FSMContext):
+    worksheet = sheet.get_worksheet(0)
+    chat_id = callback_query.from_user.id
+
+    # buttons.user = buttons.user - 1
     if buttons.user >= 3:
+        if buttons.location_message_id:
+            await bot.delete_message(chat_id, buttons.location_message_id)
         buttons.user = buttons.user - 1
         inline_btn1 = InlineKeyboardButton('<< Назад', callback_data='btn1')
         inline_btn2 = InlineKeyboardButton('Вперёд >>', callback_data='btn2')
@@ -156,92 +179,171 @@ async def command(callback_query: types.CallbackQuery, state: FSMContext):
         fio = worksheet.acell(f'A{buttons.user}').value
         tel = worksheet.acell(f'B{buttons.user}').value
         message = f"Результат поиска🔍:\n\nФИО: {fio}\nТелефон: +{tel}"
-        chat_id = 1028676957  # Замените на ID чата или пользователя, куда отправить
 
-        await bot.send_message(chat_id, message, reply_markup=inline_kb)
+        await callback_query.message.edit_text(message, reply_markup=inline_kb)
+        lat = worksheet.acell(f'C{buttons.user}').value
+        lon = worksheet.acell(f'D{buttons.user}').value
+        location_message = await bot.send_location(chat_id,float(lat),float(lon))
+        buttons.location_message_id = location_message.message_id
+       # await bot.send_message(chat_id, message, reply_markup=inline_kb)
+   
     if buttons.user < 2:
-        buttons.user = buttons.user - 1
+        
         inline_btn2 = InlineKeyboardButton('Вперёд >>', callback_data='btn2')
 
         inline_kb = InlineKeyboardMarkup(row_width=1)
         inline_kb.add(inline_btn2)
-        chat_id = 1028676957
-        await bot.send_message(chat_id, 'Это был первый пользователь в списке', reply_markup=inline_kb)
+        await callback_query.message.edit_text('Это был первый пользователь в списке', reply_markup=inline_kb)
+        #await bot.send_message(chat_id, 'Это был первый пользователь в списке', reply_markup=inline_kb)
 
-### LOCATION ###
-@dp.message_handler(text="Выгрузка")
-async def command(message: types.Message):
-    user_id = message.from_user.id 
-    lat = worksheet.acell(f'C{buttons.user}').value
-    lon = worksheet.acell(f'D{buttons.user}').value
-    await bot.send_location(user_id,float(lat),float(lon))
 
 @dp.message_handler(text="/send_post")
 async def command(message: types.Message):
+    worksheet = sheet.get_worksheet(0)
     id = message.from_user.id
-    if id == 1028676957 or id == 925098584:
+    if id == 1028676957 or id == 925098584 or id == 5225100069:
         await message.reply('Отправьте изображение')
         await States.waiting_for_post_photo.set()
 @dp.message_handler(content_types=types.ContentType.PHOTO ,state=States.waiting_for_post_photo)
 async def command(message: types.Message, state: FSMContext):
     photo_id = message.photo[0].file_id
     buttons.photo_post_id = photo_id
-    with open(f'postp.txt', 'w') as text_file:
-        text_file.write(photo_id)
+    buttons.post_photo_id = photo_id
     # Отправляем пользователю сообщение об успешном сохранении фотографии
     await message.reply('Теперь нужно отправить текст')
     await States.waiting_for_post_text.set()
 @dp.message_handler(state=States.waiting_for_post_text)
 async def command(message: types.Message, state: FSMContext):
     text = message.text
-    with open(f'postt.txt', 'w') as text_file:
-        text_file.write(text)
+    buttons.post_text_id = text
     await message.answer('Текст сохранен. /check_post')
     await state.finish()
 
-@dp.message_handler(text='ahelp')
+@dp.message_handler(text='/ahelp')
 async def command(message: types.Message, state: FSMContext):
+    worksheet = sheet.get_worksheet(0)
     id = message.from_user.id
-    if id == 1028676957 or id == 925098584:
-       await message.reply('commands:\n/send_post\n/check_post')
+    if id == 1028676957 or id == 925098584 or id == 5225100069:
+        await message.reply('commands:\n/send_post\n/check_post\n/history')
 
 @dp.message_handler(text='/check_post')
 async def command(message: types.Message):
-    textp = buttons.read_text_from_file('postt.txt')
-    photo = buttons.read_text_from_file('postp.txt')
-    await bot.send_photo(message.chat.id, photo, caption=f'{textp}\n\n___________________________\nЗапускать рассылку?(да/нет)')
+    worksheet = sheet.get_worksheet(0)
+    id = message.from_user.id
+    if id == 1028676957 or id == 925098584 or id == 5225100069:
+        textp = buttons.post_text_id
+        photop = buttons.post_photo_id
+        if textp != None and photop != None:
+            await bot.send_photo(message.chat.id, photop, caption=f'{textp}\n\n___________________________\nЗапускать рассылку?(да/нет)')
+        else:
+            await message.reply('Рассылка не выбрана!')
 @dp.message_handler(text='да')
 async def command(message: types.Message):
+    print(buttons.post_text_id)
+    print(buttons.post_photo_id)
+    worksheet = sheet.get_worksheet(0)
     id = message.from_user.id
-    if id == 1028676957 or id == 925098584:
-
-
-        text_post1 = buttons.read_text_from_file('postt.txt')
-        text_post2 = buttons.read_text_from_file('postp.txt')
-        worksheet = sheet.get_worksheet(1)
-        next_row = next_available_row(worksheet)
-        worksheet.update_acell("A{}".format(next_row), f'{text_post1}')
-        worksheet.update_acell("B{}".format(next_row), f'{text_post2}')
-        worksheet = sheet.get_worksheet(0)
-
-
-        while True:
-            us_id = worksheet.acell(f'G{buttons.sender+1}').value
-            textp = buttons.read_text_from_file('postt.txt')
-            buttons.sender = buttons.sender + 1
-            print(buttons.sender)
-            try:
-                if id != None:
-                    await bot.send_photo(us_id,buttons.photo_post_id, caption=f'{textp}')
-            except:
-                buttons.sender = 1
-                break       
+    if id == 1028676957 or id == 925098584 or id == 5225100069:
+        if buttons.post_photo_id != None and buttons.post_text_id != None:
+            text_post1 = buttons.post_text_id
+            text_post2 = buttons.post_photo_id
+            worksheet = sheet.get_worksheet(1)
+            next_row = next_available_row(worksheet)
+            worksheet.update_acell("A{}".format(next_row), f'{text_post1}')
+            worksheet.update_acell("B{}".format(next_row), f'{text_post2}')
+            worksheet = sheet.get_worksheet(0)
+            while True:
+                print(1)
+                us_id = worksheet.acell(f'G{buttons.sender+1}').value
+                textp = buttons.post_text_id
+                photop = buttons.post_photo_id
+                buttons.sender = buttons.sender + 1
+                try:
+                    if id != None:
+                        await bot.send_photo(us_id,photop, caption=f'{textp}')
+                except:
+                    buttons.sender = 1
+                    break     
+        else:
+            if buttons.post_photo_id == None and buttons.post_text_id == None:
+                await message.reply('Не сделано сообщение для рассылки!')
 @dp.message_handler(text='нет')
 async def command(message: types.Message):
     id = message.from_user.id
-    if id == 1028676957 or id == 925098584:
+    if id == 1028676957 or id == 925098584 or id == 5225100069:
         await message.reply('Отправьте изображение')
         await States.waiting_for_post_photo.set()
+
+@dp.message_handler(text="/history")
+async def command(message: types.Message):
+    id = message.from_user.id
+    if id == 1028676957 or id == 925098584 or id == 5225100069:
+        inline_btn1 = InlineKeyboardButton('<< Назад', callback_data='btn3')
+        inline_btn2 = InlineKeyboardButton('Вперёд >>', callback_data='btn4')
+        inline_btn3 = InlineKeyboardButton('<< Повторить >>', callback_data='btn5')
+        inline_kb = InlineKeyboardMarkup(row_width=3)
+        inline_kb.add(inline_btn1, inline_btn3, inline_btn2)
+        worksheet = sheet.get_worksheet(1)
+        fio = worksheet.acell(f'A{buttons.history}').value
+        tel = worksheet.acell(f'B{buttons.history}').value
+        photo_message = await bot.send_photo(id, tel, caption=f'{buttons.history-1}\n{fio}',reply_markup=inline_kb)
+        buttons.photo_message_id = photo_message.message_id
+        buttons.post_photo_id = tel
+        buttons.post_text_id = fio
+@dp.callback_query_handler(lambda callback_query: callback_query.data == "btn4")
+async def command(callback_query: types.CallbackQuery, state: FSMContext):
+    id = callback_query.from_user.id
+    worksheet = sheet.get_worksheet(1)
+    buttons.history = buttons.history + 1
+    inline_btn1 = InlineKeyboardButton('<< Назад', callback_data='btn3')
+    inline_btn2 = InlineKeyboardButton('Вперёд >>', callback_data='btn4')
+    inline_btn3 = InlineKeyboardButton('<< Повторить >>', callback_data='btn5')
+    inline_kb = InlineKeyboardMarkup(row_width=3)
+    inline_kb.add(inline_btn1, inline_btn3, inline_btn2)
+    fio = worksheet.acell(f'A{buttons.history}').value
+    tel = worksheet.acell(f'B{buttons.history}').value
+    if fio != None and tel != None:
+        if buttons.photo_message_id:
+            await bot.delete_message(id, buttons.photo_message_id)
+        photo_message = await bot.send_photo(id, tel, caption=f'{buttons.history-1}\n{fio}',reply_markup=inline_kb)
+        buttons.photo_message_id = photo_message.message_id
+        buttons.post_photo_id = tel
+        buttons.post_text_id = fio
+    if fio == None or tel == None:
+        inline_btn1 = InlineKeyboardButton('<< Назад', callback_data='btn3')
+        inline_kb = InlineKeyboardMarkup(row_width=1)
+        inline_kb.add(inline_btn1)
+        await callback_query.message.reply('Это был последний пост в списке', reply_markup=inline_kb)
+@dp.callback_query_handler(lambda callback_query: callback_query.data == "btn3")
+async def command(callback_query: types.CallbackQuery, state: FSMContext):
+    id = callback_query.from_user.id
+    worksheet = sheet.get_worksheet(1)
+    if buttons.history >= 3:
+        if buttons.photo_message_id:
+            await bot.delete_message(id, buttons.photo_message_id)
+        buttons.history = buttons.history - 1
+        fio = worksheet.acell(f'A{buttons.history}').value
+        tel = worksheet.acell(f'B{buttons.history}').value
+        inline_btn1 = InlineKeyboardButton('<< Назад', callback_data='btn3')
+        inline_btn2 = InlineKeyboardButton('Вперёд >>', callback_data='btn4')
+        inline_btn3 = InlineKeyboardButton('<< Повторить >>', callback_data='btn5')
+        inline_kb = InlineKeyboardMarkup(row_width=3)
+        inline_kb.add(inline_btn1, inline_btn3, inline_btn2)
+        photo_message = await bot.send_photo(id, tel, caption=f'{buttons.history-1}\n{fio}',reply_markup=inline_kb)
+        buttons.post_photo_id = tel
+        buttons.post_text_id = fio
+        buttons.photo_message_id = photo_message.message_id
+    if buttons.history < 2:
+        inline_btn2 = InlineKeyboardButton('Вперёд >>', callback_data='btn4')
+        inline_kb = InlineKeyboardMarkup(row_width=1)
+        inline_kb.add(inline_btn2)
+        await callback_query.message.reply('Это был первый пост в списке', reply_markup=inline_kb)
+@dp.callback_query_handler(lambda callback_query: callback_query.data == "btn5")
+async def command(callback_query: types.CallbackQuery, state: FSMContext):
+    id = callback_query.from_user.id
+    worksheet = sheet.get_worksheet(0)
+    if id == 1028676957 or id == 925098584 or id == 5225100069:
+        await bot.send_photo(id, buttons.post_photo_id, caption=f'{buttons.post_text_id}\n\n___________________________\nЗапускать рассылку?(да/нет)')
 
 if __name__ == '__main__':
     executor.start_polling(dp, skip_updates=True)
